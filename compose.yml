@@ -1,0 +1,10 @@
+services:
+  portfolio-performance:
+    image: meronx/portfolio-performance:latest
+    container_name: portfolio-performance
+    restart: unless-stopped
+    ports:
+      - 5800:5800
+    volumes:
+    - ./volume/config:/config
+    - ./volume/data:/opt/portfolio/data
