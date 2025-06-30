@@ -32,7 +32,7 @@ RUN apt-get update && \
         openjdk-21-jre \
         libwebkit2gtk-4.1-0 && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Download and extract the application
 RUN set -e && \
