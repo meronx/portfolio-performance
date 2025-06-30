@@ -47,3 +47,4 @@ RUN set -e && \
 
 # Copy run script
 COPY rootfs/ /
+RUN chmod +x /startapp.sh
