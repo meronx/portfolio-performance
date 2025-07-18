@@ -1,0 +1,103 @@
+name: Check for Dependency Updates
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      update-detected: ${{ steps.compare.outputs.update-detected }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download last state artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: state-files
+        continue-on-error: true
+
+      - name: Read stored values or fallback
+        id: read_state
+        run: |
+          PREV_RELEASE=$(cat last_release.txt 2>/dev/null || echo "none")
+          PREV_DIGEST=$(cat base_image_digest.txt 2>/dev/null || echo "none")
+          echo "prev_release=$PREV_RELEASE" >> $GITHUB_OUTPUT
+          echo "prev_digest=$PREV_DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Get latest GitHub release
+        id: latest_release
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/portfolio-performance/portfolio/releases/latest | jq -r .tag_name)
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+
+      - name: Get Docker base image digest
+        id: base_digest
+        run: |
+          BASE_IMAGE="jlesage/baseimage-gui:ubuntu-24.04-v4"
+          DIGEST=$(docker buildx imagetools inspect $BASE_IMAGE --format '{{index .Manifest "digest"}}')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Compare and report changes
+        id: compare
+        run: |
+          echo "Previous release: ${{ steps.read_state.outputs.prev_release }}"
+          echo "Current release: ${{ steps.latest_release.outputs.latest }}"
+          echo "Previous digest: ${{ steps.read_state.outputs.prev_digest }}"
+          echo "Current digest: ${{ steps.base_digest.outputs.digest }}"
+
+          UPDATE_DETECTED=false
+
+          if [ "${{ steps.read_state.outputs.prev_release }}" != "${{ steps.latest_release.outputs.latest }}" ]; then
+            echo "📦 New release detected!"
+            UPDATE_DETECTED=true
+          fi
+
+          if [ "${{ steps.read_state.outputs.prev_digest }}" != "${{ steps.base_digest.outputs.digest }}" ]; then
+            echo "🐳 New base image detected!"
+            UPDATE_DETECTED=true
+          fi
+
+          echo "update-detected=$UPDATE_DETECTED" >> $GITHUB_OUTPUT
+
+      - name: Save current state as artifacts
+        run: |
+          echo "${{ steps.latest_release.outputs.latest }}" > last_release.txt
+          echo "${{ steps.base_digest.outputs.digest }}" > base_image_digest.txt
+
+      - name: Upload new state artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-files
+          path: |
+            last_release.txt
+            base_image_digest.txt
+
+  build-and-push:
+    needs: check-updates
+    if: needs.check-updates.outputs.update-detected == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          docker build --build-arg ARCH=x86_64 --build-arg APP_VERSION=${{ needs.check-updates.outputs.latest_release }} -t meronx/portfolio-performance:latest .
+          docker tag meronx/portfolio-performance:latest meronx/portfolio-performance:${{ needs.check-updates.outputs.latest_release }}
+
+      - name: Push Docker image
+        run: |
+          docker push meronx/portfolio-performance:latest
+          docker push meronx/portfolio-performance:${{ needs.check-updates.outputs.latest_release }}
