@@ -30,7 +30,7 @@ To obtain the pre-built image effortlessly, simply execute the following command
 # Pull latest image version
 docker pull meronx/portfolio-performance:latest
 
-# Run docker container with example compose.yaml
+# Run docker container with example compose.yml
 docker compose up -d
 ```
 
@@ -47,6 +47,6 @@ cd portfolio-performance
 docker buildx build . \
     --network host \
     --build-arg ARCH=x86_64 \
-    --build-arg APP_VERSION=0.69.0 \
-    --tag portfolio-performance:0.69.0
+    --build-arg APP_VERSION=<release_version> \
+    --tag portfolio-performance:<release_version>
 ```

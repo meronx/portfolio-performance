@@ -1,0 +1,159 @@
+name: Docker build pipeline
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      update-detected: ${{ steps.compare.outputs.update-detected }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read repository variables
+        id: read_state
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: |
+          set -e
+          echo "Fetching stored variables..."
+
+          PREV_RELEASE=$(gh api repos/${{ github.repository }}/actions/variables/LAST_RELEASE | jq -r '.value' || echo "none")
+
+          if [ "$PREV_RELEASE" = "none" ] || [ -z "$PREV_RELEASE" ]; then
+            echo "::error::Previous release value is undefined or 'none'. Aborting."
+            exit 1
+          fi
+
+          PREV_DIGEST=$(gh api repos/${{ github.repository }}/actions/variables/BASE_IMAGE_DIGEST | jq -r '.value' || echo "none")
+
+          if [ "$PREV_DIGEST" = "none" ] || [ -z "$PREV_DIGEST" ]; then
+            echo "::error::Previous digest value is undefined or 'none'. Aborting."
+            exit 1
+          fi
+          
+          echo "prev_release=$PREV_RELEASE" >> $GITHUB_OUTPUT
+          echo "prev_digest=$PREV_DIGEST" >> $GITHUB_OUTPUT
+
+          echo "Previous release: $PREV_RELEASE"
+          echo "Previous digest: $PREV_DIGEST"
+
+      - name: Get latest GitHub release
+        id: latest_release
+        run: |
+          LATEST=$(curl -fsSL https://api.github.com/repos/portfolio-performance/portfolio/releases/latest | jq -r .tag_name)
+          
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+
+          if [ "$LATEST" = "none" ] || [ -z "$LATEST" ]; then
+            echo "::error::Current release value is undefined or 'none'. Aborting."
+            exit 1
+          fi          
+          
+          echo "Current release: $LATEST"
+
+      - name: Get Docker base image digest
+        id: base_digest
+        run: |
+          BASE_IMAGE=$(grep -m 1 '^FROM' Dockerfile | awk '{print $2}')
+          DIGEST=$(skopeo inspect docker://$BASE_IMAGE | jq -r '.Digest')
+          
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+          if [ "$DIGEST" = "none" ] || [ -z "$DIGEST" ]; then
+            echo "::error::Current digest value is undefined or 'none'. Aborting."
+            exit 1
+          fi
+          
+          echo "Current digest: $DIGEST"
+          
+      - name: Compare and update variables
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: |
+          set -e
+          UPDATE_DETECTED=false
+
+          PREV_RELEASE="${{ steps.read_state.outputs.prev_release }}"
+          PREV_DIGEST="${{ steps.read_state.outputs.prev_digest }}"
+          CURR_RELEASE="${{ steps.latest_release.outputs.latest }}"
+          CURR_DIGEST="${{ steps.base_digest.outputs.digest }}"
+
+          echo "Previous release: $PREV_RELEASE"
+          echo "Current release: $CURR_RELEASE"
+          echo "Previous digest: $PREV_DIGEST"
+          echo "Current digest: $CURR_DIGEST"
+
+          if [ "$PREV_RELEASE" != "$CURR_RELEASE" ]; then
+            echo "New release detected!"
+            gh api --method PATCH repos/${{ github.repository }}/actions/variables/LAST_RELEASE \
+              -f name='LAST_RELEASE' -f value="$CURR_RELEASE"
+            UPDATE_DETECTED=true
+          fi
+
+          if [ "$PREV_DIGEST" != "$CURR_DIGEST" ]; then
+            echo "New base image detected!"
+            gh api --method PATCH repos/${{ github.repository }}/actions/variables/BASE_IMAGE_DIGEST \
+              -f name='BASE_IMAGE_DIGEST' -f value="$CURR_DIGEST"
+            UPDATE_DETECTED=true
+          fi
+
+          echo "update-detected=$UPDATE_DETECTED" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    needs: check-updates
+    if: needs.check-updates.outputs.update-detected == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch updated LAST_RELEASE variable
+        id: get_version
+        env:
+          GH_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+        run: |
+          VERSION=$(gh api repos/${{ github.repository }}/actions/variables/LAST_RELEASE | jq -r '.value')
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "app_version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-${{ github.sha }}
+          restore-keys: |
+            buildx-
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE_NAME="meronx/portfolio-performance"
+          docker buildx build \
+            --build-arg ARCH=x86_64 \
+            --build-arg APP_VERSION=$APP_VERSION \
+            --tag $IMAGE_NAME:latest \
+            --tag $IMAGE_NAME:$APP_VERSION \
+            --cache-from type=local,src=/tmp/.buildx-cache \
+            --cache-to type=local,dest=/tmp/.buildx-cache-new \
+            --push .
+
+      - name: Move new cache into place
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
