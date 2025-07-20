@@ -1,5 +1,5 @@
 # Use base image
-FROM jlesage/baseimage-gui:ubuntu-22.04-v4
+FROM jlesage/baseimage-gui:ubuntu-24.04-v4
 
 # Define build arguments
 ARG ARCH
