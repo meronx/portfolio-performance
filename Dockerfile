@@ -1,5 +1,5 @@
 # Use base image
-FROM jlesage/baseimage-gui:ubuntu-24.04-v4
+FROM jlesage/baseimage-gui:ubuntu-26.04-v4
 
 # Set labels
 LABEL \
@@ -24,7 +24,7 @@ ENV APP_NAME="Portfolio Performance" \
 # Install dependencies and application icon
 RUN add-pkg \
         curl \
-        openjdk-21-jre \
+        openjdk-25-jre \
         libwebkit2gtk-4.1-0 && \
     install_app_icon.sh "https://www.portfolio-performance.info/images/logo.png"
 
